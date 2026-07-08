@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# 本地生成产物（方案 HTML/PDF 不应进 skill 仓库）
+*.html
+!assets/map_template.html
+!references/*.md
+!SKILL.md
+!README.md
+!.gitignore
+!scripts/*.py
+
+# 临时
+*.zip
+*.tmp

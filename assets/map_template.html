@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>【行程】交互式行程地图</title>
+<!-- Leaflet CDN: 国内若 unpkg 慢，可换 jsdelivr / bootcdn 的同版本 leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html,body{margin:0;height:100%;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}
+  #map{position:absolute;inset:0;z-index:1;}
+  .panel{position:absolute;z-index:500;background:rgba(255,255,255,.94);
+    box-shadow:0 2px 12px rgba(0,0,0,.2);border-radius:10px;padding:8px 10px;}
+  #sidebar{top:12px;left:12px;width:240px;max-height:78vh;overflow:auto;}
+  #sidebar h3{margin:4px 0 8px;font-size:14px;color:#1a6b3c;}
+  #sidebar .poi-item{padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;margin-bottom:4px;
+    border-left:4px solid #ccc;background:#f6faf8;}
+  #sidebar .poi-item:hover{background:#e8f3ec;}
+  #sidebar .poi-item b{display:block;font-size:12px;color:#222;}
+  #sidebar .poi-item small{color:#777;}
+  #citybar{top:12px;right:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:46vw;justify-content:flex-end;}
+  #citybar button,#daybar button{font-family:inherit;font-size:12.5px;border:none;cursor:pointer;
+    padding:6px 11px;border-radius:18px;background:#eef3f0;color:#333;transition:.15s;}
+  #citybar button.active,#daybar button.active{background:#1a6b3c;color:#fff;}
+  #daybar{bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;}
+  #legend{bottom:14px;right:14px;font-size:12px;line-height:1.7;}
+  #legend .dot{display:inline-block;width:13px;height:13px;border-radius:50%;margin-right:5px;vertical-align:-2px;}
+  .poi{border:none;background:transparent;}
+  .poi>div{width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+    display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  .poi>div>span{transform:rotate(45deg);}
+  .hint{position:absolute;bottom:60px;left:12px;z-index:500;font-size:11px;color:#888;background:rgba(255,255,255,.8);padding:4px 8px;border-radius:6px;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="sidebar" class="panel"><h3>行程点（点此定位）</h3><div id="poi-list"></div></div>
+<div id="citybar" class="panel"></div>
+<div id="daybar" class="panel"></div>
+<div id="legend" class="panel">
+  <div><span class="dot" style="background:#e74c3c"></span>住宿</div>
+  <div><span class="dot" style="background:#2980b9"></span>景点</div>
+  <div><span class="dot" style="background:#e67e22"></span>餐饮</div>
+  <div><span class="dot" style="background:#8e44ad"></span>交通</div>
+</div>
+<div class="hint">键盘 1-8 切天 · Esc 复位全部</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ============================================================
+   配置区 —— 适配新行程只需改下面两块
+   ============================================================ */
+
+// 城市元信息（center=地图初始中心, zoom=缩放级别）
+var cityMeta = {
+  shanghai: { name:'上海', center:[31.23,121.47], zoom:12 },
+  hangzhou: { name:'杭州', center:[30.25,120.16], zoom:12 },
+  nanjing:  { name:'南京', center:[32.06,118.80], zoom:12 },
+};
+
+// 每日行程数据：每项为一天。pois 顺序即路线串联顺序。
+// t 取值: hotel(住宿) / spot(景点) / food(餐饮) / trans(交通)
+// 复制此结构填充你的真实行程即可。
+var daysData = [
+  {
+    id:1, date:'7/11 周六', city:'shanghai', title:'上海·半日游', color:'#e67e22',
+    pois:[
+      {n:'成都天府机场', lat:30.319, lng:104.441, t:'trans', time:'07:30出发', note:'✈️ 成都→上海 约2.5h'},
+      {n:'上海虹桥机场', lat:31.198, lng:121.336, t:'trans', time:'12:00到', note:'地铁2/10号线进市区'},
+      {n:'人民广场酒店', lat:31.233, lng:121.474, t:'hotel', time:'12:45入住', note:'黄浦区·3晚'},
+      {n:'田子坊', lat:31.210, lng:121.473, t:'spot', time:'14:30-16:30', note:'老弄堂文创'},
+      {n:'新天地', lat:31.220, lng:121.475, t:'spot', time:'16:30-18:00', note:'石库门逛街'},
+      {n:'外滩', lat:31.240, lng:121.490, t:'spot', time:'19:30夜景', note:'🎉 三人汇合'},
+    ]
+  },
+  // 示例结束。以下用注释说明其余天结构，请照此填充：
+  // {
+  //   id:2, date:'7/12 周日', city:'shanghai', title:'上海·梧桐漫步', color:'#27ae60',
+  //   pois:[ {n:'武康路',lat:31.21,lng:121.43,t:'spot',time:'09:00',note:'...'}, ... ]
+  // },
+];
+
+/* ============================================================
+   以下为渲染逻辑，一般无需修改
+   ============================================================ */
+var amapTiles = L.tileLayer(
+  'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=7&ltype=1&x={x}&y={y}&z={z}',
+  {subdomains:'1234', maxZoom:18, attribution:'© 高德地图'});
+var osmTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {subdomains:'abc', maxZoom:18, attribution:'© OpenStreetMap'});
+
+var map = L.map('map', {layers:[amapTiles], zoomControl:true}).setView([30.6,120.6], 7);
+// 高德失败自动回退 OSM
+amapTiles.on('tileerror', function(){ if(map.hasLayer(amapTiles)){ map.removeLayer(amapTiles); osmTiles.addTo(map); } });
+
+var layerGroup = L.layerGroup().addTo(map);
+var COLORS = {hotel:'#e74c3c', spot:'#2980b9', food:'#e67e22', trans:'#8e44ad'};
+var EMO = {hotel:'🏨', spot:'📍', food:'🍽️', trans:'🚄'};
+
+function makeIcon(t){
+  return L.divIcon({
+    className:'poi',
+    html:'<div style="background:'+COLORS[t]+'"><span>'+(EMO[t]||'•')+'</span></div>',
+    iconSize:[26,26], iconAnchor:[13,26], popupAnchor:[0,-24]
+  });
+}
+
+function render(pois, color){
+  layerGroup.clearLayers();
+  var latlngs = [];
+  pois.forEach(function(p){
+    var m = L.marker([p.lat, p.lng], {icon:makeIcon(p.t)})
+      .bindPopup('<b>'+p.n+'</b><br>⏰ '+p.time+'<br>'+p.note);
+    m.addTo(layerGroup);
+    latlngs.push([p.lat, p.lng]);
+  });
+  if(latlngs.length>1){
+    L.polyline(latlngs, {color:color, weight:5, opacity:.75}).addTo(layerGroup);
+  }
+  if(latlngs.length){
+    map.fitBounds(L.latLngBounds(latlngs).pad(0.15), {maxZoom:14});
+  }
+}
+
+function buildSidebar(pois){
+  var box = document.getElementById('poi-list'); box.innerHTML='';
+  pois.forEach(function(p){
+    var d = document.createElement('div'); d.className='poi-item';
+    d.style.borderLeftColor = COLORS[p.t];
+    d.innerHTML = '<b>'+EMO[p.t]+' '+p.n+'</b><small>⏰ '+p.time+' · '+p.note+'</small>';
+    d.onclick = function(){ map.flyTo([p.lat,p.lng], 15); };
+    box.appendChild(d);
+  });
+}
+
+function showDay(id){
+  var day = daysData.find(function(d){return d.id===id;});
+  if(!day) return;
+  document.getElementById('sidebar').querySelector('h3').textContent = day.date+' · '+day.title;
+  render(day.pois, day.color);
+  buildSidebar(day.pois);
+  setActive('daybar', 'day'+id);
+  setActive('citybar', 'city'+day.city);
+}
+
+function showCity(cityKey){
+  var ps = []; daysData.forEach(function(d){ if(d.city===cityKey) ps = ps.concat(d.pois); });
+  var meta = cityMeta[cityKey];
+  document.getElementById('sidebar').querySelector('h3').textContent = meta.name+' · 全部行程点';
+  render(ps, '#888');
+  buildSidebar(ps);
+  map.setView(meta.center, meta.zoom);
+  setActive('citybar', 'city'+cityKey);
+}
+
+function showAll(){
+  var ps = []; daysData.forEach(function(d){ ps = ps.concat(d.pois); });
+  document.getElementById('sidebar').querySelector('h3').textContent = '全部行程点（'+daysData.length+'天）';
+  render(ps, '#888');
+  buildSidebar(ps);
+  setActive('daybar', 'dayAll');
+  setActive('citybar', 'cityAll');
+}
+
+function setActive(barId, btnId){
+  document.querySelectorAll('#'+barId+' button').forEach(function(b){ b.classList.remove('active'); });
+  var el = document.getElementById(btnId); if(el) el.classList.add('active');
+}
+
+// 构建顶部城市栏
+var citybar = document.getElementById('citybar');
+var bc = document.createElement('button'); bc.id='cityAll'; bc.textContent='全部'; bc.onclick=showAll; citybar.appendChild(bc);
+Object.keys(cityMeta).forEach(function(k){
+  var b = document.createElement('button'); b.id='city'+k; b.textContent=cityMeta[k].name;
+  b.onclick=function(){ showCity(k); }; citybar.appendChild(b);
+});
+
+// 构建底部 Day 栏
+var daybar = document.getElementById('daybar');
+daysData.forEach(function(d){
+  var b = document.createElement('button'); b.id='day'+d.id; b.textContent='Day '+d.id;
+  b.onclick=function(){ showDay(d.id); }; daybar.appendChild(b);
+});
+var ball = document.createElement('button'); ball.id='dayAll'; ball.textContent='全部'; ball.onclick=showAll; daybar.appendChild(ball);
+
+// 键盘快捷键
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape'){ showAll(); return; }
+  var n = parseInt(e.key,10);
+  if(n>=1 && n<=daysData.length){ showDay(n); }
+});
+
+// 默认显示第一天
+if(daysData.length) showDay(daysData[0].id);
+</script>
+</body>
+</html>
